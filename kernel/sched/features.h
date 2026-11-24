@@ -78,6 +78,9 @@ SCHED_FEAT(HRTICK_DL, false)
  */
 SCHED_FEAT(NONTASK_CAPACITY, true)
 
+/* Research-only local IRQ accounting checkpoint; disabled by default. */
+SCHED_FEAT(IRQTIME_LOCAL_CHECKPOINT, false)
+
 #ifdef CONFIG_PREEMPT_RT
 SCHED_FEAT(TTWU_QUEUE, false)
 #else
