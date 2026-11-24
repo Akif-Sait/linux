@@ -818,6 +818,12 @@ static void update_rq_clock_task(struct rq *rq, s64 delta)
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 	if (irqtime_enabled()) {
+		/* Experimental: only the owning CPU may publish a checkpoint. */
+		if (sched_feat(IRQTIME_LOCAL_CHECKPOINT) &&
+		    cpu_of(rq) == smp_processor_id() && irqs_disabled() &&
+		    !in_nmi())
+			irqtime_account_rq_clock(rq->clock);
+
 		irq_delta = irq_time_read(cpu_of(rq)) - rq->prev_irq_time;
 
 		/*
