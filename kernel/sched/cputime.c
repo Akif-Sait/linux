@@ -83,6 +83,39 @@ void irqtime_account_irq(struct task_struct *curr, unsigned int offset)
 		irqtime_account_delta(irqtime, delta, CPUTIME_SOFTIRQ);
 }
 
+/*
+ * Experimental local checkpoint using the timestamp already sampled by
+ * update_rq_clock(). The caller must be on the owning CPU with IRQs off
+ * and IRQ-time accounting enabled. Never publish a read-only projection
+ * to rq->prev_irq_time: remote readers still see the committed counter.
+ *
+ * Match irqtime_account_irq()'s context classification. In particular,
+ * ksoftirqd's own softirq runtime belongs to the thread.
+ */
+void irqtime_account_rq_clock(u64 now)
+{
+	struct irqtime *irqtime = this_cpu_ptr(&cpu_irqtime);
+	unsigned int pc = irq_count();
+	enum cpu_usage_stat idx;
+	s64 delta;
+
+	lockdep_assert_irqs_disabled();
+
+	if (pc & HARDIRQ_MASK)
+		idx = CPUTIME_IRQ;
+	else if ((pc & SOFTIRQ_OFFSET) && current != this_cpu_ksoftirqd())
+		idx = CPUTIME_SOFTIRQ;
+	else
+		return;
+
+	delta = now - irqtime->irq_start_time;
+	if (delta <= 0)
+		return;
+
+	irqtime->irq_start_time = now;
+	irqtime_account_delta(irqtime, delta, idx);
+}
+
 static u64 irqtime_tick_accounted(u64 maxtime)
 {
 	struct irqtime *irqtime = this_cpu_ptr(&cpu_irqtime);
