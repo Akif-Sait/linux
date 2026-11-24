@@ -12,8 +12,9 @@ Tianyu Zuo et al., *Understanding Host Network Stack Latency*
 scheduler accounting may occur during a softirq while IRQ time is only
 refreshed at softirq exit. Thus task clock and virtual runtime can be
 charged to the wrong task, inflating network P99.9 latency under load.
-The authors report up to 2.7x lower tail latency in their testbed
-after more accurate IRQ time accounting.
+The authors report substantial gains in their CFS experiments, but only
+up to 1.15x from ACCa in their EEVDF experiments (section 3.7). Do not
+use the older-scheduler result as a prediction for current Linux.
 
 Paper and artifact:
 - https://www.cs.cornell.edu/~ragarwal/pubs/understanding-latency.pdf
@@ -92,3 +93,42 @@ Do not send the published paper's experimental patch as our own work.
 
 This work does not rely on RH or Dirichlet GRH. We did not identify an
 RH-derived algorithm that would materially improve Linux's hot paths.
+
+
+## Follow-up: default-off local checkpoint experiment
+
+This branch contains an UNBUILT kernel experiment, not a validated fix.
+The separate irqtime-latency-2026-11 branch remains the benchmark baseline.
+The idea of updating IRQ counters at scheduler accounting events comes
+from Zuo et al. (ACCa), not this project. This variant restricts updates
+to the owning CPU, uses the rq clock timestamp already read by the
+scheduler, and leaves remote reads unchanged. It avoids read-only
+projection, which can expose a decreasing counter to later remote reads.
+
+The model is independently executable:
+
+    python3 tools/testing/selftests/sched/irqtime_accounting_model.py
+
+It exhaustively enumerates 65,536 length-eight combinations of binary
+IRQ context and local/remote readers. Total absolute accounting error
+(in synthetic unit intervals): upstream 373248, mixed projection 248479,
+clamped mixed projection 209924, local checkpoint 200153, ideal coherent
+projection 0. Mixed projection observes a negative raw IRQ delta in
+24451 traces; local checkpoint in none. This is NOT an empirical kernel
+result. The model omits concurrency, nested IRQ boundaries, clock skew,
+NMI, virtualization, NO_HZ, and RT scheduling.
+
+With a disposable test kernel built with IRQ_TIME_ACCOUNTING and
+SCHED_DEBUG, the experimental sched feature is disabled by default.
+Inspect /sys/kernel/debug/sched/features before enabling it:
+
+    echo IRQTIME_LOCAL_CHECKPOINT > /sys/kernel/debug/sched/features
+    echo NO_IRQTIME_LOCAL_CHECKPOINT > /sys/kernel/debug/sched/features
+
+Actual paths depend on the kernel's debugfs configuration. Do not use
+on a production machine. The partial checkpoint changes when cpustat
+and tick_delta are written, and may affect NO_HZ accounting and PSI.
+Validate nested interrupts, ksoftirqd, idle transitions, tick_delta,
+clock monotonicity, paravirtual steal time, RT and remote rq locking.
+The default-off branch has not been compiled or booted. No performance
+or correctness claims are made for the actual kernel implementation.
