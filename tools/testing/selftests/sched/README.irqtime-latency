@@ -1,0 +1,94 @@
+# IRQ-time accounting and network tail latency: experiment (2026-11-24)
+
+**Status:** research-only benchmark, not an upstream patch or a regression
+fix. The benchmark is intentionally excluded from the selftests Makefile.
+It measures a single-host TCP loopback workload; it **cannot** establish
+the published paper's hardware-based latency claims.
+
+## Why investigate this?
+
+Tianyu Zuo et al., *Understanding Host Network Stack Latency*
+(SIGCOMM 2026; DOI: 10.1145/3789240.3829115) identified a mismatch:
+scheduler accounting may occur during a softirq while IRQ time is only
+refreshed at softirq exit. Thus task clock and virtual runtime can be
+charged to the wrong task, inflating network P99.9 latency under load.
+The authors report up to 2.7x lower tail latency in their testbed
+after more accurate IRQ time accounting.
+
+Paper and artifact:
+- https://www.cs.cornell.edu/~ragarwal/pubs/understanding-latency.pdf
+- https://github.com/Terabit-Ethernet/understand_latency
+- https://github.com/Terabit-Ethernet/understand_latency/blob/main/linux-6.12-latency.patch
+
+On Linux master at 8d7fe9885c62fc9a95bf55d9db244d9672a8aadc
+(2026-11-24), kernel/sched/core.c's update_rq_clock_task() still
+documents delayed IRQ accounting. The published experimental patch is
+against Linux 6.12 and includes unrelated scheduler/transport experiments
+and a hard-coded IP address. It must not be blindly cherry-picked.
+
+## How to build/run this benchmark
+
+    cc -std=gnu11 -O2 -Wall -Wextra -Werror -pthread \
+        tools/testing/selftests/sched/irqtime_loopback_bench.c \
+        -o /tmp/irqtime_loopback_bench
+    /tmp/irqtime_loopback_bench -c 1 -n 10000 -p 64
+    /tmp/irqtime_loopback_bench -c 8 -n 10000 -p 64 -b 8
+
+To create real CPU contention, run using taskset(1) on a *permitted*
+small CPU set, e.g., taskset -c 2 (only if CPU 2 is allowed by cpuset).
+Repeat at least ten times on each kernel, alternate test order, and
+record CPU model, governors, kernel config, boot parameters, IRQ affinity,
+NUMA placement and confidence intervals. Do not claim paper
+reproduction from loopback data. A real-NIC two-host test, high softirq
+load, and a trusted model of attributed IRQ time are still required.
+
+The benchmark reports TCP round-trip latencies (average, exact
+nearest-rank P50/P95/P99/P99.9) and request counts from a collection of
+one-client/one-server TCP connections. It is workload instrumentation,
+not a generic scheduler score. Scheduling noise means results can vary
+sharply even between identical consecutive runs.
+
+### Local smoke-test evidence (not a kernel comparison)
+
+On the analysis container (Linux 6.18.57, not the 2026 upstream tree):
+
+- gcc -std=gnu11 -O2 -Wall -Wextra -Werror -pthread: pass
+- 2 clients x 1,000 requests; 64 bytes: 2,000 successful exchanges
+- 4 clients x 1,000 requests with 2 busy workers: 4,000 successful exchanges
+- gcc -fsanitize=undefined: 3 clients x 1,000 requests with one busy
+  worker; 3,000 successful exchanges, no sanitizer diagnostic
+
+These runs establish only that the benchmark compiles and exchanges
+correct TCP data. They do not validate an improvement to Linux.
+
+## Merge requirements
+
+1. Reproduce the scheduler's wrong-task IRQ-time attribution on current
+   kernels using traces (not just a noisy latency histogram).
+2. Establish which existing upstream patches overlap, especially IRQ
+   accounting changes and core-scheduler updates from 2024-2026.
+3. Derive a correctness-preserving fix for nested hard/softirqs, ksoftirqd,
+   preempt-RT, per-CPU clocks, remote rq updates and virtualization.
+4. Build/run KUnit and relevant x86/arm64 configs, verify no lost/double
+   accounting, compare P99.9 and throughput with at least 10 repetitions.
+5. Send an RFC to the scheduler maintainers with explicit attribution to
+   Zuo et al. only after independent verification. No guarantee of merge.
+
+Do not send the published paper's experimental patch as our own work.
+
+## Other large issues discovered, not claimed as new
+
+- ext4 silent data loss on ENOSPC during unwritten-extent end-I/O split.
+  Reported 2026-11-16 by Jose Fernandez, with significant active
+  maintainer involvement. Do not replicate on a real filesystem.
+  https://lists.openwall.net/linux-kernel/2026/11/16/223
+- fs/pipe ~18.5% regression after unifying per-pipe preallocation pool:
+  already being investigated by Breno Leitao et al.; there is already
+  an in-tree pipe benchmark and a proposed user-access grouping patch.
+  https://lists.openwall.net/linux-kernel/2026/11/05/135
+- mm/filemap persistent mmap readahead disabled after sparse faults:
+  two overlapping fixes proposed on 2026-11-09; avoid duplicating them.
+  https://lists.openwall.net/linux-kernel/2026/11/09/1152
+
+This work does not rely on RH or Dirichlet GRH. We did not identify an
+RH-derived algorithm that would materially improve Linux's hot paths.
